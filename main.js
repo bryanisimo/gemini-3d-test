@@ -134,51 +134,55 @@ maskMesh.position.z = -0.1; // Behind the border
 triangleGroup.add(maskMesh);
 
 // Create Clean Border (Neon Frame)
-// We use a LineLoop but with a custom material or just a very clear LineSegments
-const borderPoints = [botLeftPt, botRightPt, topPt, botLeftPt];
-const borderGeo = new THREE.BufferGeometry().setFromPoints(borderPoints);
-const borderMat = new THREE.LineBasicMaterial({ color: 0xff4500 });
-const borderLine = new THREE.Line(borderGeo, borderMat);
-triangleGroup.add(borderLine);
+const borderMat = new THREE.MeshBasicMaterial({ color: 0xff4500 });
+const jointGeo = new THREE.SphereGeometry(0.5, 16, 16);
+const jointMat = borderMat;
 
-// Add a slightly thicker "glow" mesh for the border using a Shape with a hole
-const thickness = 0.5;
-const outerShape = new THREE.Shape();
-outerShape.moveTo(botLeftPt.x - thickness, botLeftPt.y - thickness);
-outerShape.lineTo(botRightPt.x + thickness, botRightPt.y - thickness);
-outerShape.lineTo(topPt.x, topPt.y + thickness);
-outerShape.closePath();
+// Add joints at corners
+[botLeftPt, botRightPt, topPt].forEach(pt => {
+    const joint = new THREE.Mesh(jointGeo, jointMat);
+    joint.position.copy(pt);
+    triangleGroup.add(joint);
+});
 
-const innerShape = new THREE.Path();
-innerShape.moveTo(botLeftPt.x, botLeftPt.y);
-innerShape.lineTo(botRightPt.x, botRightPt.y);
-innerShape.lineTo(topPt.x, topPt.y);
-innerShape.closePath();
-outerShape.holes.push(innerShape);
+// Add cylinders for edges
+function createEdge(p1, p2) {
+    const dist = p1.distanceTo(p2);
+    const edgeGeo = new THREE.CylinderGeometry(0.5, 0.5, dist, 8);
+    const edge = new THREE.Mesh(edgeGeo, borderMat);
 
-const glowGeo = new THREE.ShapeGeometry(outerShape);
-const glowMat = new THREE.MeshBasicMaterial({ color: 0xff4500, transparent: true, opacity: 0.8 });
-const glowMesh = new THREE.Mesh(glowGeo, glowMat);
-glowMesh.position.z = 0.01;
-triangleGroup.add(glowMesh);
+    // Position at midpoint
+    edge.position.copy(p1).add(p2).multiplyScalar(0.5);
+
+    // Rotate to align
+    edge.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), p2.clone().sub(p1).normalize());
+    triangleGroup.add(edge);
+}
+
+createEdge(botLeftPt, botRightPt);
+createEdge(botRightPt, topPt);
+createEdge(topPt, botLeftPt);
 
 // Orbiting Lights (Oval, Brighter Center)
 const light1 = new THREE.PointLight(0xffaa00, 5, 80); // Increased intensity
 const light2 = new THREE.PointLight(0xff4500, 5, 80);
 
 // Outer Oval (Colored) - Made larger
+// Outer Oval (Colored) - Made larger
 const outerGeo = new THREE.SphereGeometry(1.5);
-const outerMat = new THREE.MeshBasicMaterial({ color: 0xff4500, transparent: true, opacity: 0.8 });
-const outerMesh1 = new THREE.Mesh(outerGeo, outerMat);
-const outerMesh2 = new THREE.Mesh(outerGeo, outerMat);
-outerMesh1.scale.set(1.5, 0.5, 0.5); // More pronounced oval
+const baseOuterMat = new THREE.MeshBasicMaterial({ color: 0xff4500, transparent: true, opacity: 0.8 });
+
+const outerMesh1 = new THREE.Mesh(outerGeo, baseOuterMat.clone());
+const outerMesh2 = new THREE.Mesh(outerGeo, baseOuterMat.clone());
+outerMesh1.scale.set(1.5, 0.5, 0.5);
 outerMesh2.scale.set(1.5, 0.5, 0.5);
 
 // Inner Core (White/Bright) - Made larger
 const innerGeo = new THREE.SphereGeometry(0.8);
-const innerMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-const innerMesh1 = new THREE.Mesh(innerGeo, innerMat);
-const innerMesh2 = new THREE.Mesh(innerGeo, innerMat);
+const baseInnerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1.0 });
+
+const innerMesh1 = new THREE.Mesh(innerGeo, baseInnerMat.clone());
+const innerMesh2 = new THREE.Mesh(innerGeo, baseInnerMat.clone());
 innerMesh1.scale.set(1.5, 0.5, 0.5);
 innerMesh2.scale.set(1.5, 0.5, 0.5);
 
@@ -367,17 +371,14 @@ function animate() {
     // Corners are at t = 0, 1/3, 2/3, 1
     const corners = [0, 1 / 3, 2 / 3, 1];
 
-    function getOpacity(t, thresh = 0.05) { // Fade window size
+    function getOpacity(t, thresh = 0.12) { // Slightly wider fade
         let minDist = 1.0;
         for (let c of corners) {
             let d = Math.abs(t - c);
+            if (d > 0.5) d = 1.0 - d; // Circular distance
             if (d < minDist) minDist = d;
         }
-        // Smoothstep: 0 at corner, 1 at dist > thresh
-        return THREE.MathUtils.smoothstep(minDist, 0, thresh); // 0 at corner, 1 away? No.
-        // We want 0 at corner (minDist=0), 1 away.
-        // smoothstep(min, max, x) -> 0 if x < min, 1 if x > max
-        return THREE.MathUtils.smoothstep(minDist, 0.0, 0.08);
+        return THREE.MathUtils.smoothstep(minDist, 0.0, thresh);
     }
 
     const op1 = getOpacity(t1);
@@ -389,9 +390,10 @@ function animate() {
     outerMesh2.material.opacity = 0.8 * op2;
     innerMesh2.material.opacity = 1.0 * op2;
 
-    // Position lights relative to the triangle group
-    light1.position.copy(data1.position).add(triangleGroup.position);
-    light2.position.copy(data2.position).add(triangleGroup.position);
+    // Position lights slightly offset forward to avoid z-fighting with mask
+    const zOffset = new THREE.Vector3(0, 0, 0.5);
+    light1.position.copy(data1.position).add(zOffset).add(triangleGroup.position);
+    light2.position.copy(data2.position).add(zOffset).add(triangleGroup.position);
 
     // Align ovals (X axis) with tangent
     const axis = new THREE.Vector3(1, 0, 0);
