@@ -98,7 +98,7 @@ const water = new Water(
             texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
         }),
         sunDirection: new THREE.Vector3(),
-        sunColor: 0xffffff,
+        sunColor: 0x808080,
         waterColor: 0x001e0f,
         distortionScale: 3.7,
         fog: scene.fog !== undefined
@@ -355,13 +355,39 @@ function animate() {
     // Water - slower
     water.material.uniforms['time'].value += 1.0 / 120.0;
 
-    // Triangle Lights - slower
-    const loopTime = 15; // Slower loop
+    // Triangle Lights - slower (30% speed of previous 15s -> ~50s)
+    const loopTime = 50;
     const t1 = (elapsedTime % loopTime) / loopTime;
     const t2 = ((elapsedTime + loopTime / 2) % loopTime) / loopTime;
 
     const data1 = getTriangleData(t1, triPoints);
     const data2 = getTriangleData(t2, triPoints);
+
+    // Calculate fade based on distance to corners (0, 0.33, 0.66, 1.0)
+    // Corners are at t = 0, 1/3, 2/3, 1
+    const corners = [0, 1 / 3, 2 / 3, 1];
+
+    function getOpacity(t, thresh = 0.05) { // Fade window size
+        let minDist = 1.0;
+        for (let c of corners) {
+            let d = Math.abs(t - c);
+            if (d < minDist) minDist = d;
+        }
+        // Smoothstep: 0 at corner, 1 at dist > thresh
+        return THREE.MathUtils.smoothstep(minDist, 0, thresh); // 0 at corner, 1 away? No.
+        // We want 0 at corner (minDist=0), 1 away.
+        // smoothstep(min, max, x) -> 0 if x < min, 1 if x > max
+        return THREE.MathUtils.smoothstep(minDist, 0.0, 0.08);
+    }
+
+    const op1 = getOpacity(t1);
+    const op2 = getOpacity(t2);
+
+    // Update Opacity
+    outerMesh1.material.opacity = 0.8 * op1; // Max 0.8
+    innerMesh1.material.opacity = 1.0 * op1;
+    outerMesh2.material.opacity = 0.8 * op2;
+    innerMesh2.material.opacity = 1.0 * op2;
 
     // Position lights relative to the triangle group
     light1.position.copy(data1.position).add(triangleGroup.position);
