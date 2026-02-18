@@ -42,8 +42,49 @@ bloomPass.radius = 0.8; // Wider blur
 bloomPass.threshold = 0.1;
 composer.addPass(bloomPass);
 
-const rgbShiftPass = new ShaderPass(RGBShiftShader);
-rgbShiftPass.uniforms['amount'].value = 0.0020;
+// --- Custom Radial RGB Shift Shader ---
+const RadialRGBShiftShader = {
+    uniforms: {
+        'tDiffuse': { value: null },
+        'amount': { value: 0.005 },
+        'angle': { value: 0.0 }
+    },
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+        }
+    `,
+    fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform float amount;
+        uniform float angle;
+        varying vec2 vUv;
+
+        void main() {
+            vec2 offset = amount * vec2( cos(angle), sin(angle));
+            
+            // Calculate distance from center (0.5, 0.5)
+            float dist = distance(vUv, vec2(0.5));
+            
+            // Increase offset based on distance (squared for non-linear effect)
+            vec2 rOffset = offset * dist * 2.0; 
+            vec2 gOffset = offset * dist * 1.0; // Less shift for green
+            vec2 bOffset = offset * dist * 2.5; 
+            
+            vec4 cr = texture2D(tDiffuse, vUv + rOffset);
+            vec4 cg = texture2D(tDiffuse, vUv);
+            vec4 cb = texture2D(tDiffuse, vUv - bOffset);
+            
+            gl_FragColor = vec4(cr.r, cg.g, cb.b, 1.0);
+        }
+    `
+};
+
+const rgbShiftPass = new ShaderPass(RadialRGBShiftShader);
+rgbShiftPass.uniforms['amount'].value = 0.005; // Base amount, scales with distance
+rgbShiftPass.uniforms['angle'].value = 3.5;
 composer.addPass(rgbShiftPass);
 
 // --- 1. The Sea ---
@@ -68,63 +109,78 @@ water.position.y = -30; // Move water down significantly
 scene.add(water);
 
 // --- 2. The Triangle ---
-// 70% of screen height at z=-20.
-// Approx radius 35.
 const triangleRadius = 35;
+const triangleWidthFactor = 1.3;
+
 const topPt = new THREE.Vector3(0, triangleRadius * Math.sqrt(3) / 2, 0);
-const botRightPt = new THREE.Vector3(triangleRadius / 2 * 1.3, -triangleRadius * Math.sqrt(3) / 4, 0);
-const botLeftPt = new THREE.Vector3(-triangleRadius / 2 * 1.3, -triangleRadius * Math.sqrt(3) / 4, 0);
+const botRightPt = new THREE.Vector3(triangleRadius / 2 * triangleWidthFactor, -triangleRadius * Math.sqrt(3) / 4, 0);
+const botLeftPt = new THREE.Vector3(-triangleRadius / 2 * triangleWidthFactor, -triangleRadius * Math.sqrt(3) / 4, 0);
 
-// Path for TubeGeometry
-const curve = new THREE.CatmullRomCurve3([
-    botLeftPt, botRightPt, topPt
-], true, 'catmullrom', 0); // closed, type, tension (0 for straight lines between points)
+const triangleGroup = new THREE.Group();
+triangleGroup.position.set(0, 10, -20);
+scene.add(triangleGroup);
 
-const tubeGeometry = new THREE.TubeGeometry(curve, 64, 0.4, 8, true); // radius 0.4 for thickness
+// Create the Black Mask (Solid Center)
+const maskShape = new THREE.Shape();
+maskShape.moveTo(botLeftPt.x, botLeftPt.y);
+maskShape.lineTo(botRightPt.x, botRightPt.y);
+maskShape.lineTo(topPt.x, topPt.y);
+maskShape.closePath();
 
-const triangleMaterial = new THREE.MeshBasicMaterial({
-    color: 0xff4500, // Orange-Red Neon
-});
+const maskGeo = new THREE.ShapeGeometry(maskShape);
+const maskMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+const maskMesh = new THREE.Mesh(maskGeo, maskMat);
+maskMesh.position.z = -0.1; // Behind the border
+triangleGroup.add(maskMesh);
 
-const triangleMesh = new THREE.Mesh(tubeGeometry, triangleMaterial);
-triangleMesh.position.y = 10;
-triangleMesh.position.z = -20;
-scene.add(triangleMesh);
+// Create Clean Border (Neon Frame)
+// We use a LineLoop but with a custom material or just a very clear LineSegments
+const borderPoints = [botLeftPt, botRightPt, topPt, botLeftPt];
+const borderGeo = new THREE.BufferGeometry().setFromPoints(borderPoints);
+const borderMat = new THREE.LineBasicMaterial({ color: 0xff4500 });
+const borderLine = new THREE.Line(borderGeo, borderMat);
+triangleGroup.add(borderLine);
 
-// --- Black Fill (Mask) ---
-const triangleShape = new THREE.Shape();
-triangleShape.moveTo(botLeftPt.x, botLeftPt.y);
-triangleShape.lineTo(botRightPt.x, botRightPt.y);
-triangleShape.lineTo(topPt.x, topPt.y);
-triangleShape.closePath();
+// Add a slightly thicker "glow" mesh for the border using a Shape with a hole
+const thickness = 0.5;
+const outerShape = new THREE.Shape();
+outerShape.moveTo(botLeftPt.x - thickness, botLeftPt.y - thickness);
+outerShape.lineTo(botRightPt.x + thickness, botRightPt.y - thickness);
+outerShape.lineTo(topPt.x, topPt.y + thickness);
+outerShape.closePath();
 
-const fillGeometry = new THREE.ShapeGeometry(triangleShape);
-const fillMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
-const triangleFill = new THREE.Mesh(fillGeometry, fillMaterial);
-// Position it slightly behind the neon frame to avoid z-fighting
-triangleFill.position.copy(triangleMesh.position);
-triangleFill.position.z -= 0.1;
-scene.add(triangleFill);
+const innerShape = new THREE.Path();
+innerShape.moveTo(botLeftPt.x, botLeftPt.y);
+innerShape.lineTo(botRightPt.x, botRightPt.y);
+innerShape.lineTo(topPt.x, topPt.y);
+innerShape.closePath();
+outerShape.holes.push(innerShape);
+
+const glowGeo = new THREE.ShapeGeometry(outerShape);
+const glowMat = new THREE.MeshBasicMaterial({ color: 0xff4500, transparent: true, opacity: 0.8 });
+const glowMesh = new THREE.Mesh(glowGeo, glowMat);
+glowMesh.position.z = 0.01;
+triangleGroup.add(glowMesh);
 
 // Orbiting Lights (Oval, Brighter Center)
-const light1 = new THREE.PointLight(0xffaa00, 2, 60);
-const light2 = new THREE.PointLight(0xff4500, 2, 60);
+const light1 = new THREE.PointLight(0xffaa00, 5, 80); // Increased intensity
+const light2 = new THREE.PointLight(0xff4500, 5, 80);
 
-// Outer Oval (Colored)
-const outerGeo = new THREE.SphereGeometry(1);
-const outerMat = new THREE.MeshBasicMaterial({ color: 0xff4500, transparent: true, opacity: 0.6 });
+// Outer Oval (Colored) - Made larger
+const outerGeo = new THREE.SphereGeometry(1.5);
+const outerMat = new THREE.MeshBasicMaterial({ color: 0xff4500, transparent: true, opacity: 0.8 });
 const outerMesh1 = new THREE.Mesh(outerGeo, outerMat);
 const outerMesh2 = new THREE.Mesh(outerGeo, outerMat);
-outerMesh1.scale.set(0.6, 0.3, 0.3); // Oval
-outerMesh2.scale.set(0.6, 0.3, 0.3);
+outerMesh1.scale.set(1.5, 0.5, 0.5); // More pronounced oval
+outerMesh2.scale.set(1.5, 0.5, 0.5);
 
-// Inner Core (White/Bright)
-const innerGeo = new THREE.SphereGeometry(0.5);
+// Inner Core (White/Bright) - Made larger
+const innerGeo = new THREE.SphereGeometry(0.8);
 const innerMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 const innerMesh1 = new THREE.Mesh(innerGeo, innerMat);
 const innerMesh2 = new THREE.Mesh(innerGeo, innerMat);
-innerMesh1.scale.set(0.6, 0.3, 0.3); // Oval
-innerMesh2.scale.set(0.6, 0.3, 0.3);
+innerMesh1.scale.set(1.5, 0.5, 0.5);
+innerMesh2.scale.set(1.5, 0.5, 0.5);
 
 light1.add(outerMesh1);
 light1.add(innerMesh1);
@@ -138,7 +194,7 @@ const triPoints = [botLeftPt, botRightPt, topPt];
 
 // --- 3. The Starfield (Custom Shader for Fade In) ---
 const starGeometry = new THREE.BufferGeometry();
-const starCount = 6000;
+const starCount = 3000;
 const starPositions = new Float32Array(starCount * 3);
 const starOpacities = new Float32Array(starCount);
 
@@ -277,13 +333,17 @@ window.addEventListener('resize', () => {
 });
 
 // Helper Function
-function getPointOnTriangle(t, points) {
+function getTriangleData(t, points) {
     let pos = t * 3;
     let index = Math.floor(pos);
     let segmentT = pos - index;
     let p1 = points[index % 3];
     let p2 = points[(index + 1) % 3];
-    return new THREE.Vector3().lerpVectors(p1, p2, segmentT);
+
+    return {
+        position: new THREE.Vector3().lerpVectors(p1, p2, segmentT),
+        tangent: new THREE.Vector3().subVectors(p2, p1).normalize()
+    };
 }
 
 // --- Animation Loop ---
@@ -300,13 +360,18 @@ function animate() {
     const t1 = (elapsedTime % loopTime) / loopTime;
     const t2 = ((elapsedTime + loopTime / 2) % loopTime) / loopTime;
 
-    const pos1 = getPointOnTriangle(t1, triPoints);
-    const pos2 = getPointOnTriangle(t2, triPoints);
+    const data1 = getTriangleData(t1, triPoints);
+    const data2 = getTriangleData(t2, triPoints);
 
-    // Rotate oval lights to align with path tangent? 
-    // Simplified: Just position.
-    light1.position.copy(pos1).add(triangleMesh.position);
-    light2.position.copy(pos2).add(triangleMesh.position);
+    // Position lights relative to the triangle group
+    light1.position.copy(data1.position).add(triangleGroup.position);
+    light2.position.copy(data2.position).add(triangleGroup.position);
+
+    // Align ovals (X axis) with tangent
+    const axis = new THREE.Vector3(1, 0, 0);
+    // Add quaternion rotation to align
+    if (data1.tangent.lengthSq() > 0) light1.quaternion.setFromUnitVectors(axis, data1.tangent);
+    if (data2.tangent.lengthSq() > 0) light2.quaternion.setFromUnitVectors(axis, data2.tangent);
 
     // Dynamic Background - slower
     const hue = 0.6 + Math.sin(elapsedTime * 0.05) * 0.1;
